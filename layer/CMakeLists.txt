@@ -4,7 +4,7 @@ project(MultiExynoosLayer LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-set(MX_VERSION "0.1.0" CACHE STRING "MultiExynoos package version")
+set(MX_VERSION "0.0.1" CACHE STRING "MultiExynoos package version")
 
 include(FetchContent)
 FetchContent_Declare(Vulkan-Headers
@@ -19,5 +19,8 @@ target_compile_definitions(VkLayer_MultiExynoos
 target_compile_options(VkLayer_MultiExynoos PRIVATE -Wall -Wextra -Werror)
 
 if(ANDROID)
+    # Statically link the C++ runtime so the prebuilt .so does not require
+    # libc++_shared.so in the app's native-lib directory.
+    target_link_options(VkLayer_MultiExynoos PRIVATE -static-libstdc++)
     target_link_libraries(VkLayer_MultiExynoos PRIVATE log)
 endif()

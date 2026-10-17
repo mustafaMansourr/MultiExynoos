@@ -15,6 +15,7 @@
  * vendor driver.
  */
 #include <vulkan/vulkan.h>
+#include <vulkan/vk_layer.h>
 
 #include <cstdlib>
 #include <cstring>
@@ -37,17 +38,23 @@ static bool mx_log_enabled() {
 #endif
 
 #ifndef MX_VERSION_STR
-#define MX_VERSION_STR "0.1.0-dev"
+#define MX_VERSION_STR "0.0.1-dev"
 #endif
 
 /* Loader layer interface version we speak. v2 = current negotiate+
  * vkGetInstanceProcAddr(NULL, ...) semantics. */
 static constexpr uint32_t kMaxLoaderLayerInterface = 2;
 
+/* Forward declarations: the loader receives these entry points through the
+ * negotiate struct, so they must be declared before it is filled in. */
+VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
+mx_GetInstanceProcAddr(VkInstance instance, const char *name);
+VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
+mx_GetDeviceProcAddr(VkDevice device, const char *name);
+
 namespace {
 
 PFN_vkGetInstanceProcAddr next_gipa = nullptr;
-PFN_vkGetDeviceProcAddr next_gdpa = nullptr;
 PFN_vkCreateInstance real_create_instance = nullptr;
 PFN_vkGetInstanceProcAddr real_gipa = nullptr;
 PFN_vkGetDeviceProcAddr real_gdpa = nullptr;
@@ -74,7 +81,6 @@ VKAPI_ATTR VkResult VKAPI_CALL mx_CreateInstance(const VkInstanceCreateInfo *ci,
     }
 
     next_gipa = link->u.pLayerInfo->pfnNextGetInstanceProcAddr;
-    next_gdpa = link->u.pLayerInfo->pfnNextGetDeviceProcAddr;
 
     real_create_instance = reinterpret_cast<PFN_vkCreateInstance>(
         next_gipa(VK_NULL_HANDLE, "vkCreateInstance"));
@@ -95,11 +101,17 @@ VKAPI_ATTR VkResult VKAPI_CALL mx_CreateInstance(const VkInstanceCreateInfo *ci,
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL
-mx_NegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterfaceVersion *v) {
-    if (!v || v->loaderLayerInterfaceVersion < 2)
+mx_NegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface *v) {
+    if (!v)
+        return VK_ERROR_INITIALIZATION_FAILED;
+    if (v->loaderLayerInterfaceVersion < MIN_SUPPORTED_LOADER_LAYER_INTERFACE_VERSION)
         return VK_ERROR_INITIALIZATION_FAILED;
     if (v->loaderLayerInterfaceVersion > kMaxLoaderLayerInterface)
         v->loaderLayerInterfaceVersion = kMaxLoaderLayerInterface;
+    /* Hand the loader our dispatch entry points; without these the layer is
+     * loaded but never called. */
+    v->pfnGetInstanceProcAddr = mx_GetInstanceProcAddr;
+    v->pfnGetDeviceProcAddr = mx_GetDeviceProcAddr;
     return VK_SUCCESS;
 }
 
@@ -138,7 +150,7 @@ mx_GetInstanceProcAddr(VkInstance instance, const char *name) {
 extern "C" {
 
 VKAPI_ATTR VkResult VKAPI_CALL vkNegotiateLoaderLayerInterfaceVersion(
-    VkNegotiateLayerInterfaceVersion *v) {
+    VkNegotiateLayerInterface *v) {
     return mx_NegotiateLoaderLayerInterfaceVersion(v);
 }
 
