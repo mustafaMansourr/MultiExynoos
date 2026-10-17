@@ -41,12 +41,12 @@ MultiExynoos = **Phase C+**: truthful compatibility layer now, RADV ICD after.
 ```powershell
 # Windows — CMake path (CI uses this)
 $env:ANDROID_NDK_HOME = "C:\path\to\ndk"
-./scripts/build-layer.ps1 -Version 0.0.1
-./scripts/package.ps1    # -> dist/MultiExynoos-layer-0.0.1_g<sha>.zip
+./scripts/build-layer.ps1 -Version 0.0.11
+./scripts/package.ps1    # -> dist/MultiExynoos-layer-0.0.11_g<sha>.zip
 
 # Windows — no-cmake fallback (direct NDK clang++)
 git clone --depth 1 --branch v1.3.296 https://github.com/KhronosGroup/Vulkan-Headers.git external/Vulkan-Headers
-./scripts/build-layer-direct.ps1 -Ndk "C:\path\to\ndk" -Version 0.0.1
+./scripts/build-layer-direct.ps1 -Ndk "C:\path\to\ndk" -Version 0.0.11
 ./scripts/package.ps1
 ```
 
@@ -64,6 +64,16 @@ MultiExynoos-layer-<version>_g<gitsha>.zip
 ├── VkLayer_MultiExynoos.json
 └── meta.json
 ```
+
+## Importing into an adrenotools host (ARMSX3, Yuzu-likes)
+
+`libraryName` in `meta.json` **must name the `.so` that is present at the zip
+root** — that is the file the host `dlopen`s and uses as the driver. It must
+**not** be the vendor driver this layer *wraps* (`vulkan.samsung.so`); ARMSX3's
+import validator (`CustomDriver.installFromStream`) reads `libraryName`, looks
+for `<zip root>/<libraryName>`, and rejects the package with *"Import failed"*
+when it is absent. `layerName` is the loader-layer identity and is ignored by
+adrenotools hosts.
 
 ## Deploy (per-app path — no root, no flash)
 

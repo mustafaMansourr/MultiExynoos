@@ -1,13 +1,12 @@
 {
     "schemaVersion": 1,
     "name": "MultiExynoos Layer",
-    "description": "MultiExynoos Phase-1 passthrough layer for Samsung Xclipse GPUs. Set VK_INSTANCE_LAYERS=VK_LAYER_MX_MULTIEXYNOOS. Wraps the stock vulkan.samsung.so; changes no behaviour.",
+    "description": "MultiExynoos Phase-1 passthrough layer for Samsung Xclipse GPUs. As an adrenotools/ARMSX3 driver pack this is the library that gets dlopened; as a loader layer it wraps the stock vulkan.samsung.so. Changes no behaviour.",
     "author": "MultiExynoos",
-    "packageVersion": "0.0.1",
+    "packageVersion": "0.0.11",
     "vendor": "SAMSUNG",
     "driverVersion": "stock-passthrough",
     "minApi": 30,
-    "libraryName": "vulkan.samsung.so",
-    "layerLibrary": "libVkLayer_MultiExynoos.so",
+    "libraryName": "libVkLayer_MultiExynoos.so",
     "layerName": "VK_LAYER_MX_MULTIEXYNOOS"
 }

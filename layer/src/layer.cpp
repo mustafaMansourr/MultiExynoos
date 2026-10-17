@@ -38,7 +38,7 @@ static bool mx_log_enabled() {
 #endif
 
 #ifndef MX_VERSION_STR
-#define MX_VERSION_STR "0.0.1-dev"
+#define MX_VERSION_STR "0.0.11-dev"
 #endif
 
 /* Loader layer interface version we speak. v2 = current negotiate+
