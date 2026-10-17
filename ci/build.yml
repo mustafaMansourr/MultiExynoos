@@ -1,0 +1,40 @@
+# MultiExynoos CI — ACTIVATION NOTE
+#
+# This file lives at ci/build.yml because pushing directly into
+# .github/workflows/ requires the GitHub token to have the "workflow" scope.
+# To activate:
+#   1) gh auth refresh -h github.com -s workflow
+#   2) git mv ci/build.yml .github/workflows/build.yml && git push
+# GitHub only triggers workflows from .github/workflows/, so this copy is inert.
+
+name: build
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # Fast syntax/link check on the host — catches breakage before NDK work.
+  host-syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cmake -S layer -B build-host -DCMAKE_BUILD_TYPE=Release
+      - run: cmake --build build-host -j4
+
+  # Real Android build + release-asset packaging (Weab-chan-style
+  # commit-pinned naming: MultiExynoos-layer-<ver>_g<sha>.zip).
+  android-layer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build layer (NDK)
+        shell: bash
+        run: ./scripts/build-layer.sh "$ANDROID_NDK_LATEST_HOME"
+      - name: Package release asset
+        shell: pwsh
+        run: ./scripts/package.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MultiExynoos-layer
+          path: dist/*.zip

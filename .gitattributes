@@ -1,0 +1,8 @@
+# Shell scripts and CI workflows must stay LF (CRLF breaks bash in CI).
+*.sh text eol=lf
+*.yml text eol=lf
+*.ps1 text eol=crlf
+*.cpp text eol=lf
+*.txt text eol=lf
+*.json text eol=lf
+*.md text eol=lf
