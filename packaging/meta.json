@@ -3,7 +3,7 @@
     "name": "MultiExynoos Layer",
     "description": "MultiExynoos Phase-1 passthrough layer for Samsung Xclipse GPUs. Set VK_INSTANCE_LAYERS=VK_LAYER_MX_MULTIEXYNOOS. Wraps the stock vulkan.samsung.so; changes no behaviour.",
     "author": "MultiExynoos",
-    "packageVersion": "0.1.0",
+    "packageVersion": "0.0.1",
     "vendor": "SAMSUNG",
     "driverVersion": "stock-passthrough",
     "minApi": 30,

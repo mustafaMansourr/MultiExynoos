@@ -39,10 +39,15 @@ MultiExynoos = **Phase C+**: truthful compatibility layer now, RADV ICD after.
 ## Build (NDK required)
 
 ```powershell
-# Windows
+# Windows — CMake path (CI uses this)
 $env:ANDROID_NDK_HOME = "C:\path\to\ndk"
-./scripts/build-layer.ps1 -Version 0.1.0
-./scripts/package.ps1    # -> dist/MultiExynoos-layer-0.1.0_g<sha>.zip
+./scripts/build-layer.ps1 -Version 0.0.1
+./scripts/package.ps1    # -> dist/MultiExynoos-layer-0.0.1_g<sha>.zip
+
+# Windows — no-cmake fallback (direct NDK clang++)
+git clone --depth 1 --branch v1.3.296 https://github.com/KhronosGroup/Vulkan-Headers.git external/Vulkan-Headers
+./scripts/build-layer-direct.ps1 -Ndk "C:\path\to\ndk" -Version 0.0.1
+./scripts/package.ps1
 ```
 
 ```bash
