@@ -1,31 +1,50 @@
 /* SPDX-License-Identifier: MIT
- * MultiExynoos — Phase 1 passthrough Vulkan layer for Samsung Xclipse GPUs.
+ * MultiExynoos — passthrough Vulkan shim for Samsung Xclipse GPUs.
  *
- * Purpose (Phase 1): prove the per-app driver/layer loading path
- * (meta.json + VkLayer_MultiExynoos.json + VK_INSTANCE_LAYERS) end to
- * end, with ZERO behaviour change: every call is forwarded to the next
- * layer / ICD (stock vulkan.samsung.so) untouched.
+ * Dual-mode by design, because two very different hosts load this one .so:
  *
- * Phase 2 adds intercepts: on-disk pipeline cache, truthful extension
- * advertisement, compute BCn decode.
+ *   1. Loader layer. A Vulkan loader chains us via VK_LAYER_LINK_INFO and we
+ *      forward to the next layer/ICD. This is the Phase-1 behaviour and is
+ *      unchanged.
  *
- * License note: written from scratch against the public Vulkan-Loader
- * layer interface. No code was copied from ExynosTools (that repo ships
- * no license file — treat as unlicensed), from Mesa, or from any
+ *   2. Standalone ICD. adrenotools hosts (ARMSX3 and the Yuzu-likes) dlopen
+ *      this .so and use it as the *single* Vulkan driver. They call
+ *      vkGetInstanceProcAddr(NULL, "vkCreateInstance"); there is no loader
+ *      chain and therefore no VK_LAYER_LINK_INFO. In this mode we self-load
+ *      the real driver and forward to it.
+ *
+ * Why mode 2 exists: before it, mode 2 hit the "vkCreateInstance without
+ * VK_LAYER_LINK_INFO" branch and returned VK_ERROR_INITIALIZATION_FAILED. On
+ * ARMSX3 that surfaced as a permanent black screen with nothing in the log,
+ * because the emulator's Vulkan instance never came up: its RSX thread then
+ * died in on_init_thread() before it released the PPU thread, so no shader
+ * compilation, no pipeline compilation, no PPU module load and no SPU cache
+ * ever ran. Returning a real instance here is what unblocks that.
+ *
+ * Phase 2 adds intercepts (on-disk pipeline cache, truthful extension
+ * advertisement, compute BCn decode). Phase 3 replaces the wrapped driver
+ * with a RADV-based ICD (see docs/ROADMAP.md). This file stays the shim.
+ *
+ * License note: written from scratch against the public Vulkan-Loader layer
+ * and loader/ICD interfaces. No code was copied from ExynosTools (that repo
+ * ships no license file — treat as unlicensed), from Mesa, or from any
  * vendor driver.
  */
 #include <vulkan/vulkan.h>
 #include <vulkan/vk_layer.h>
+#include <vulkan/vk_icd.h>
 
 #include <cstdlib>
 #include <cstring>
 
 #ifdef __ANDROID__
 #include <android/log.h>
+#include <dlfcn.h>
 #define MX_LOG(fmt, ...)                                                       \
     __android_log_print(ANDROID_LOG_INFO, "MultiExynoos", fmt, ##__VA_ARGS__)
 #else
 #include <cstdio>
+#include <dlfcn.h>
 static bool mx_log_enabled() {
     static const bool enabled = std::getenv("MX_DEBUG") != nullptr;
     return enabled;
@@ -45,19 +64,39 @@ static bool mx_log_enabled() {
  * vkGetInstanceProcAddr(NULL, ...) semantics. */
 static constexpr uint32_t kMaxLoaderLayerInterface = 2;
 
-/* Forward declarations: the loader receives these entry points through the
- * negotiate struct, so they must be declared before it is filled in. */
+/* Forward declarations: both the loader (via the negotiate struct) and the
+ * ICD host (via vkGetInstanceProcAddr) reach these, so they are declared
+ * before either entry point is filled in. */
 VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
 mx_GetInstanceProcAddr(VkInstance instance, const char *name);
 VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
 mx_GetDeviceProcAddr(VkDevice device, const char *name);
+VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
+mx_GetPhysicalDeviceProcAddr(VkInstance instance, const char *name);
+VKAPI_ATTR VkResult VKAPI_CALL
+mx_CreateInstance(const VkInstanceCreateInfo *ci,
+                  const VkAllocationCallbacks *alloc, VkInstance *out_instance);
+VKAPI_ATTR VkResult VKAPI_CALL
+mx_NegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface *v);
+VKAPI_ATTR VkResult VKAPI_CALL
+mx_icdNegotiateLoaderICDInterfaceVersion(uint32_t *pVersion);
 
 namespace {
 
-PFN_vkGetInstanceProcAddr next_gipa = nullptr;
-PFN_vkCreateInstance real_create_instance = nullptr;
-PFN_vkGetInstanceProcAddr real_gipa = nullptr;
+PFN_vkGetInstanceProcAddr next_gipa = nullptr; /* layer mode: from link info */
+PFN_vkGetInstanceProcAddr real_gipa = nullptr; /* post-instance forwarder    */
 PFN_vkGetDeviceProcAddr real_gdpa = nullptr;
+
+/* Standalone-ICD mode: the driver we wrap, opened by us rather than supplied
+ * by a loader. Held for the process lifetime on purpose — a Vulkan driver
+ * cannot be unloaded while any resolved pointer is still reachable. */
+void *g_underlying = nullptr;
+PFN_vkGetInstanceProcAddr underlying_gipa = nullptr;
+PFN_vkCreateInstance underlying_create = nullptr;
+
+/* Set once a Vulkan loader has negotiated the ICD interface with us. Used to
+ * avoid dlopen("libvulkan.so") recursing into the loader that just loaded us. */
+bool g_entered_as_icd = false;
 
 const VkLayerInstanceCreateInfo *find_instance_link(
     const VkInstanceCreateInfo *ci) {
@@ -71,31 +110,135 @@ const VkLayerInstanceCreateInfo *find_instance_link(
     return chain;
 }
 
-VKAPI_ATTR VkResult VKAPI_CALL mx_CreateInstance(const VkInstanceCreateInfo *ci,
-                                                 const VkAllocationCallbacks *alloc,
-                                                 VkInstance *out_instance) {
-    const VkLayerInstanceCreateInfo *link = find_instance_link(ci);
-    if (!link) {
-        MX_LOG("vkCreateInstance without VK_LAYER_LINK_INFO");
+/* Try one dlopen candidate. Accepts either loader-style
+ * vkGetInstanceProcAddr or the ICD-style vk_icdGetInstanceProcAddr, since a
+ * stock vendor ICD (vulkan.samsung.so) exports only the latter. */
+bool load_underlying_from(const char *path) {
+    if (!path || !*path)
+        return false;
+
+    void *handle = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+    if (!handle) {
+        const char *err = dlerror();
+        MX_LOG("underlying '%s' dlopen failed: %s", path,
+               err ? err : "unknown");
+        return false;
+    }
+
+    auto gipa = reinterpret_cast<PFN_vkGetInstanceProcAddr>(
+        dlsym(handle, "vkGetInstanceProcAddr"));
+    if (!gipa) {
+        gipa = reinterpret_cast<PFN_vkGetInstanceProcAddr>(
+            dlsym(handle, "vk_icdGetInstanceProcAddr"));
+    }
+    if (!gipa) {
+        MX_LOG("underlying '%s' exports no vkGetInstanceProcAddr / "
+               "vk_icdGetInstanceProcAddr",
+               path);
+        dlclose(handle);
+        return false;
+    }
+
+    g_underlying = handle;
+    underlying_gipa = gipa;
+    MX_LOG("underlying driver loaded: %s", path);
+    return true;
+}
+
+bool ensure_underlying() {
+    if (underlying_gipa)
+        return true;
+
+    /* Explicit override wins, so an on-device experiment needs no rebuild. */
+    if (const char *override_path = std::getenv("MX_UNDERLYING_DRIVER")) {
+        if (load_underlying_from(override_path))
+            return true;
+    }
+
+    /* Direct-dlopen hosts (adrenotools/ARMSX3) want the system stack, and here
+     * libvulkan.so is safe: nothing has loaded us through it, so there is no
+     * recursion. */
+    if (!g_entered_as_icd && load_underlying_from("libvulkan.so"))
+        return true;
+
+    /* Wrapped-vendor targets, by soname and by the two vendor lib paths. These
+     * are the correct targets when we were entered as an ICD by a loader: the
+     * vendor ICD does not loop back into that loader. */
+    if (load_underlying_from("vulkan.samsung.so"))
+        return true;
+    if (load_underlying_from("/vendor/lib64/hw/vulkan.samsung.so"))
+        return true;
+    if (load_underlying_from("/vendor/lib/hw/vulkan.samsung.so"))
+        return true;
+
+    /* Deliberately NOT falling back to libvulkan.so when g_entered_as_icd:
+     * that dlopen would recurse (loader -> us -> loader) and crash. Fail with
+     * a clear log instead. */
+    return false;
+}
+
+} // namespace
+
+VKAPI_ATTR VkResult VKAPI_CALL mx_CreateInstance(
+    const VkInstanceCreateInfo *ci, const VkAllocationCallbacks *alloc,
+    VkInstance *out_instance) {
+    /* ---- Mode 1: chained by a loader (VK_LAYER_LINK_INFO present) ---- */
+    if (const VkLayerInstanceCreateInfo *link = find_instance_link(ci)) {
+        next_gipa = link->u.pLayerInfo->pfnNextGetInstanceProcAddr;
+
+        auto create = reinterpret_cast<PFN_vkCreateInstance>(
+            next_gipa(VK_NULL_HANDLE, "vkCreateInstance"));
+        if (!create) {
+            MX_LOG("layer mode: next layer exposes no vkCreateInstance");
+            return VK_ERROR_INITIALIZATION_FAILED;
+        }
+
+        const VkResult r = create(ci, alloc, out_instance);
+        MX_LOG("vkCreateInstance -> %d  (MultiExynoos layer " MX_VERSION_STR ")",
+               static_cast<int>(r));
+
+        if (r == VK_SUCCESS) {
+            real_gipa = reinterpret_cast<PFN_vkGetInstanceProcAddr>(
+                next_gipa(*out_instance, "vkGetInstanceProcAddr"));
+            real_gdpa = reinterpret_cast<PFN_vkGetDeviceProcAddr>(
+                next_gipa(*out_instance, "vkGetDeviceProcAddr"));
+        }
+        return r;
+    }
+
+    /* ---- Mode 2: we ARE the driver (adrenotools/ARMSX3 direct dlopen) ---- */
+    if (!ensure_underlying()) {
+        MX_LOG("no underlying Vulkan driver available; set MX_UNDERLYING_DRIVER "
+               "to an absolute .so path");
         return VK_ERROR_INITIALIZATION_FAILED;
     }
 
-    next_gipa = link->u.pLayerInfo->pfnNextGetInstanceProcAddr;
-
-    real_create_instance = reinterpret_cast<PFN_vkCreateInstance>(
-        next_gipa(VK_NULL_HANDLE, "vkCreateInstance"));
-    if (!real_create_instance)
+    if (!underlying_create) {
+        underlying_create = reinterpret_cast<PFN_vkCreateInstance>(
+            underlying_gipa(VK_NULL_HANDLE, "vkCreateInstance"));
+    }
+    if (!underlying_create) {
+        underlying_create = reinterpret_cast<PFN_vkCreateInstance>(
+            dlsym(g_underlying, "vkCreateInstance"));
+    }
+    if (!underlying_create) {
+        MX_LOG("underlying driver exposes no vkCreateInstance");
         return VK_ERROR_INITIALIZATION_FAILED;
+    }
 
-    const VkResult r = real_create_instance(ci, alloc, out_instance);
-    MX_LOG("vkCreateInstance -> %d  (MultiExynoos passthrough " MX_VERSION_STR ")",
+    const VkResult r = underlying_create(ci, alloc, out_instance);
+    MX_LOG("vkCreateInstance -> %d  (MultiExynoos standalone ICD " MX_VERSION_STR
+           ")",
            static_cast<int>(r));
 
     if (r == VK_SUCCESS) {
-        real_gipa = reinterpret_cast<PFN_vkGetInstanceProcAddr>(
-            next_gipa(*out_instance, "vkGetInstanceProcAddr"));
+        real_gipa = underlying_gipa;
         real_gdpa = reinterpret_cast<PFN_vkGetDeviceProcAddr>(
-            next_gipa(*out_instance, "vkGetDeviceProcAddr"));
+            underlying_gipa(*out_instance, "vkGetDeviceProcAddr"));
+        if (!real_gdpa) {
+            real_gdpa = reinterpret_cast<PFN_vkGetDeviceProcAddr>(
+                dlsym(g_underlying, "vkGetDeviceProcAddr"));
+        }
     }
     return r;
 }
@@ -115,7 +258,23 @@ mx_NegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface *v) {
     return VK_SUCCESS;
 }
 
-} // namespace
+VKAPI_ATTR VkResult VKAPI_CALL
+mx_icdNegotiateLoaderICDInterfaceVersion(uint32_t *pVersion) {
+    if (!pVersion)
+        return VK_ERROR_INITIALIZATION_FAILED;
+
+    /* Remember we were entered as an ICD so ensure_underlying() does not
+     * dlopen the very loader that is calling us. */
+    g_entered_as_icd = true;
+
+    if (*pVersion > CURRENT_LOADER_ICD_INTERFACE_VERSION)
+        *pVersion = CURRENT_LOADER_ICD_INTERFACE_VERSION;
+    if (*pVersion < MIN_SUPPORTED_LOADER_ICD_INTERFACE_VERSION)
+        return VK_ERROR_INITIALIZATION_FAILED;
+
+    MX_LOG("ICD interface negotiated (version %u)", *pVersion);
+    return VK_SUCCESS;
+}
 
 VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
 mx_GetDeviceProcAddr(VkDevice device, const char *name) {
@@ -128,6 +287,19 @@ mx_GetDeviceProcAddr(VkDevice device, const char *name) {
 }
 
 VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
+mx_GetPhysicalDeviceProcAddr(VkInstance instance, const char *name) {
+    if (!name)
+        return nullptr;
+    /* Best-effort: a loader forwards physical-device extension queries here.
+     * The instance/device split is not needed for a passthrough. */
+    if (real_gipa)
+        return real_gipa(instance, name);
+    if (ensure_underlying())
+        return underlying_gipa(instance, name);
+    return nullptr;
+}
+
+VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
 mx_GetInstanceProcAddr(VkInstance instance, const char *name) {
     if (!name)
         return nullptr;
@@ -135,16 +307,34 @@ mx_GetInstanceProcAddr(VkInstance instance, const char *name) {
         return reinterpret_cast<PFN_vkVoidFunction>(mx_GetInstanceProcAddr);
     if (!std::strcmp(name, "vkGetDeviceProcAddr"))
         return reinterpret_cast<PFN_vkVoidFunction>(mx_GetDeviceProcAddr);
+    if (!std::strcmp(name, "vkCreateInstance"))
+        return reinterpret_cast<PFN_vkVoidFunction>(mx_CreateInstance);
     if (!std::strcmp(name, "vkNegotiateLoaderLayerInterfaceVersion"))
         return reinterpret_cast<PFN_vkVoidFunction>(
             mx_NegotiateLoaderLayerInterfaceVersion);
-    if (!std::strcmp(name, "vkCreateInstance"))
-        return reinterpret_cast<PFN_vkVoidFunction>(mx_CreateInstance);
-    /* Pre-instance queries the loader makes for anything else belong to
-     * the loader/ICD; after instance creation, forward down the chain. */
-    if (instance == VK_NULL_HANDLE)
+    if (!std::strcmp(name, "vk_icdGetInstanceProcAddr"))
+        return reinterpret_cast<PFN_vkVoidFunction>(mx_GetInstanceProcAddr);
+    if (!std::strcmp(name, "vk_icdGetPhysicalDeviceProcAddr"))
+        return reinterpret_cast<PFN_vkVoidFunction>(mx_GetPhysicalDeviceProcAddr);
+    if (!std::strcmp(name, "vk_icdNegotiateLoaderICDInterfaceVersion"))
+        return reinterpret_cast<PFN_vkVoidFunction>(
+            mx_icdNegotiateLoaderICDInterfaceVersion);
+
+    /* Pre-instance queries (vkEnumerateInstanceVersion,
+     * vkEnumerateInstanceExtensionProperties, vkEnumerateInstanceLayerProperties)
+     * must reach the underlying driver in ICD mode, where no loader answers
+     * them for us. */
+    if (instance == VK_NULL_HANDLE) {
+        if (ensure_underlying())
+            return underlying_gipa(VK_NULL_HANDLE, name);
         return nullptr;
-    return real_gipa ? real_gipa(instance, name) : nullptr;
+    }
+
+    if (real_gipa)
+        return real_gipa(instance, name);
+    if (ensure_underlying())
+        return underlying_gipa(instance, name);
+    return nullptr;
 }
 
 extern "C" {
@@ -162,6 +352,23 @@ vkGetInstanceProcAddr(VkInstance instance, const char *name) {
 VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
 vkGetDeviceProcAddr(VkDevice device, const char *name) {
     return mx_GetDeviceProcAddr(device, name);
+}
+
+/* Loader/ICD interface (vk_icd.h). Exported so this .so can be used as a
+ * standalone ICD by a Vulkan loader as well as by adrenotools hosts. */
+VKAPI_ATTR VkResult VKAPI_CALL
+vk_icdNegotiateLoaderICDInterfaceVersion(uint32_t *pVersion) {
+    return mx_icdNegotiateLoaderICDInterfaceVersion(pVersion);
+}
+
+VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
+vk_icdGetInstanceProcAddr(VkInstance instance, const char *name) {
+    return mx_GetInstanceProcAddr(instance, name);
+}
+
+VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
+vk_icdGetPhysicalDeviceProcAddr(VkInstance instance, const char *name) {
+    return mx_GetPhysicalDeviceProcAddr(instance, name);
 }
 
 } // extern "C"

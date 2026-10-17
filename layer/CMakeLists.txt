@@ -13,7 +13,9 @@ FetchContent_Declare(Vulkan-Headers
 FetchContent_MakeAvailable(Vulkan-Headers)
 
 add_library(VkLayer_MultiExynoos SHARED src/layer.cpp)
-target_link_libraries(VkLayer_MultiExynoos PRIVATE Vulkan::Headers)
+# CMAKE_DL_LIBS is dlopen/dlsym: the standalone-ICD mode opens the driver it
+# wraps. On Android it is empty (bionic puts it in libc) but harmless.
+target_link_libraries(VkLayer_MultiExynoos PRIVATE Vulkan::Headers ${CMAKE_DL_LIBS})
 target_compile_definitions(VkLayer_MultiExynoos
     PRIVATE MX_VERSION_STR="${MX_VERSION}")
 target_compile_options(VkLayer_MultiExynoos PRIVATE -Wall -Wextra -Werror)

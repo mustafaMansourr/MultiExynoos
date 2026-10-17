@@ -42,6 +42,7 @@ $verHdr = Join-Path $OutDir "mx_version.h"
     layer/src/layer.cpp `
     -static-libstdc++ `
     -llog `
+    -ldl `
     "-Wl,--exclude-libs,ALL" `
     -o $out
 if ($LASTEXITCODE -ne 0) { throw "compile failed ($LASTEXITCODE)" }
