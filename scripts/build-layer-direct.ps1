@@ -1,9 +1,9 @@
 # No-cmake fallback build: drives the NDK's target clang++ directly.
 # Use when CMake/Ninja are unavailable (CI uses the CMake path).
-# Usage: ./scripts/build-layer-direct.ps1 -Ndk <ndk_path> -Version 0.0.11
+# Usage: ./scripts/build-layer-direct.ps1 -Ndk <ndk_path> -Version 0.0.2
 param(
     [Parameter(Mandatory = $true)][string]$Ndk,
-    [string]$Version = "0.0.11",
+    [string]$Version = "0.0.2",
     [string]$OutDir = "build-android",
     [string]$Headers = "external/Vulkan-Headers",
     [string]$Api = "26"

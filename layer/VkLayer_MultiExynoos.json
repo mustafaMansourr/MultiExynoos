@@ -5,8 +5,8 @@
         "type": "GLOBAL",
         "library_path": "libVkLayer_MultiExynoos.so",
         "api_version": "1.3.0",
-        "implementation_version": "1",
-        "description": "MultiExynoos passthrough layer for Samsung Xclipse (Phase 1: pure forwarder in front of the stock ICD)",
+        "implementation_version": "2",
+        "description": "MultiExynoos passthrough shim for Samsung Xclipse: loader layer in front of the stock ICD, and standalone passthrough ICD when a host dlopens it as the single driver",
         "disable_environment": {
             "DISABLE_MULTIEXYNOOS_LAYER": "1"
         }

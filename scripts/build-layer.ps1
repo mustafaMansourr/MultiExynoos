@@ -1,7 +1,7 @@
 param(
     [string]$Ndk = $env:ANDROID_NDK_HOME,
     [string]$BuildDir = "build-android",
-    [string]$Version = "0.0.11",
+    [string]$Version = "0.0.2",
     [string]$Generator = ""
 )
 $ErrorActionPreference = "Stop"

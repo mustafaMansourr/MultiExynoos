@@ -4,7 +4,7 @@
 set -euo pipefail
 NDK="${1:-${ANDROID_NDK_HOME:-}}"
 [ -n "$NDK" ] || { echo "usage: $0 <ndk_path> (or set ANDROID_NDK_HOME)"; exit 1; }
-VERSION="${MX_VERSION:-0.0.11}"
+VERSION="${MX_VERSION:-0.0.2}"
 BUILD_DIR="${BUILD_DIR:-build-android}"
 
 cmake -S layer -B "$BUILD_DIR" \

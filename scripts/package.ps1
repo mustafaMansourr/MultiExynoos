@@ -1,8 +1,8 @@
-# Packages the Phase-1 layer into the release asset:
+# Packages the shim into the release asset:
 #   dist/MultiExynoos-layer-<version>_g<sha>.zip
 # Contents (zip root): libVkLayer_MultiExynoos.so, VkLayer_MultiExynoos.json, meta.json
 param(
-    [string]$Version = "0.0.11",
+    [string]$Version = "0.0.2",
     [string]$BuildDir = "build-android",
     [string]$OutDir = "dist"
 )
