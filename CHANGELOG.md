@@ -1,9 +1,46 @@
 # Changelog
 
+## 0.0.3v — 2026-10-18 (hotfix re-release of the `v0.0.3` asset)
+
+Fixes the **Eden (Switch) regression** shipped in the original 0.0.3 build:
+with that pack installed, games no longer opened. `packageVersion` stays
+canonical `0.0.3`; the asset name and the user-visible version carry the `v`
+suffix, and `driverVersion` moved to `0.0.3v` so hosts that key
+re-installation on the metadata (Eden) re-install the pack automatically.
+
+### Fixed
+
+- **Eden "games no longer open" (root cause: gipa-first HAL ladder).**
+  `adopt_hal_handle()` looked for an ICD-style `vkGetInstanceProcAddr` /
+  `vk_icdGetInstanceProcAddr` symbol on the candidate handle *before*
+  inspecting its `HMI`. The Samsung vendor HAL `vulkan.samsung.so` exports
+  `HMI` and **no** gipa symbol at all, so the ladder rejected the one driver
+  that works on Xclipse, ran out of candidates, and adrenotools could not
+  load the pack — so no game booted. The ladder now probes `HMI` first and
+  keeps the ICD-style path as the fallback (commit `984975d`).
+- **Self-load guard for the new probe.** The `HMI` candidate is rejected with
+  the same `dladdr` base comparison already used for gipa (`ptr_is_self()`),
+  so a host hook that redirects our own `dlopen` back to this `.so` can never
+  be adopted and recurse into `mx_hal_open`.
+
+### Verified live (SM-A566B, Android 16, Exynos 1580)
+
+- Eden: `HAL: vendor ICD loaded via its HMI: vulkan.samsung.so`,
+  `HAL vkCreateInstance -> 0`, pipeline cache loaded; Super Mario Odyssey
+  in-game at 98 FPS for 9+ minutes, no crash, no tombstone, no `VK_ERROR`.
+- ARMSX3: unchanged working behaviour with the same pack.
+- Not a driver fault: an Eden process death on a loaded device is Android's
+  low-memory killer (`exited due to signal 9`, no tombstone) — free RAM
+  before launching.
+
 ## 0.0.3 — 2026-10-18
 
 Fixes the ARMSX3-only black screen on Demon's Souls (BLES00932) when the
 MultiExynoos driver is selected. Import this into an adrenotools host.
+
+> **Superseded by 0.0.3v** (same day): the original 0.0.3 build broke Eden.
+> The `v0.0.3` release asset was replaced; `driverVersion` is the field that
+> tells a host which of the two builds it has.
 
 ### Fixed
 

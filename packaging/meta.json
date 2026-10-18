@@ -5,7 +5,7 @@
     "author": "MultiExynoos",
     "packageVersion": "0.0.3",
     "vendor": "SAMSUNG",
-    "driverVersion": "stock-passthrough",
+    "driverVersion": "0.0.3v",
     "minApi": 30,
     "libraryName": "libVkLayer_MultiExynoos.so",
     "layerLibrary": "libVkLayer_MultiExynoos.so",
