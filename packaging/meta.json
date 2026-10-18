@@ -1,12 +1,13 @@
 {
     "schemaVersion": 1,
     "name": "MultiExynoos",
-    "description": "MultiExynoos Vulkan shim for Samsung Xclipse GPUs. Dual-mode: as an adrenotools/ARMSX3 driver pack this .so is dlopened and used as the single driver (standalone passthrough ICD — it self-loads the underlying driver and needs no VK_LAYER_LINK_INFO); as a loader layer it wraps the stock vulkan.samsung.so. Changes no behaviour.",
+    "description": "MultiExynoos Vulkan shim for Samsung Xclipse GPUs. Dual-mode: as an adrenotools/ARMSX3 driver pack this .so is dlopened and used as the single driver (standalone passthrough ICD: it self-loads the underlying driver and needs no VK_LAYER_LINK_INFO); as a loader layer it wraps the stock vulkan.samsung.so. Changes no behaviour.",
     "author": "MultiExynoos",
     "packageVersion": "0.0.2",
     "vendor": "SAMSUNG",
     "driverVersion": "stock-passthrough",
     "minApi": 30,
     "libraryName": "libVkLayer_MultiExynoos.so",
+    "layerLibrary": "libVkLayer_MultiExynoos.so",
     "layerName": "VK_LAYER_MX_MULTIEXYNOOS"
 }
