@@ -84,7 +84,7 @@ static void mx_log_banner_once(const char *mode, const char *target) {
 }
 
 #ifndef MX_VERSION_STR
-#define MX_VERSION_STR "0.0.2-dev"
+#define MX_VERSION_STR "0.0.3-dev"
 #endif
 
 /* Loader layer interface version we speak. v2 = current negotiate+

@@ -7,10 +7,13 @@ Target workload: heavy Android emulation (PS3-class / RPCS3 first; PS4-class / s
 > **pure passthrough Vulkan shim** whose only job is to prove the per-app
 > loading path end to end (`meta.json` → launcher → layer or direct `dlopen` →
 > stock `vulkan.samsung.so`). It changes zero behaviour by design.
-> Since `0.0.2` the same `.so` serves two hosts: a Vulkan loader chains it as a
-> layer (`VK_LAYER_LINK_INFO`), and adrenotools-style hosts that `dlopen` it and
-> use it as the single driver get the **standalone-ICD** path — it opens the
-> driver it wraps itself, no layer link info required.
+> Since `0.0.3` the same `.so` serves three hosts/paths: a Vulkan loader chains
+> it as a layer (`VK_LAYER_LINK_INFO`), adrenotools-style hosts that `dlopen` it
+> and use it as the single driver get the **standalone-ICD** path — it opens the
+> driver it wraps itself, no layer link info required — and ARMSX3's
+> custom-driver hook, which substitutes it into the system loader's HAL path,
+> gets the **Android Vulkan HAL (`HMI`)** path where it forwards to the vendor
+> ICD.
 > The actual driver track is a **RADV-based ICD** (Mesa, MIT) — see [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Why this shape
@@ -45,12 +48,12 @@ MultiExynoos = **Phase C+**: truthful compatibility layer now, RADV ICD after.
 ```powershell
 # Windows — CMake path (CI uses this)
 $env:ANDROID_NDK_HOME = "C:\path\to\ndk"
-./scripts/build-layer.ps1 -Version 0.0.2
-./scripts/package.ps1    # -> dist/MultiExynoos-layer-0.0.2_g<sha>.zip
+./scripts/build-layer.ps1 -Version 0.0.3
+./scripts/package.ps1    # -> dist/MultiExynoos-layer-0.0.3_g<sha>.zip
 
 # Windows — no-cmake fallback (direct NDK clang++)
 git clone --depth 1 --branch v1.3.296 https://github.com/KhronosGroup/Vulkan-Headers.git external/Vulkan-Headers
-./scripts/build-layer-direct.ps1 -Ndk "C:\path\to\ndk" -Version 0.0.2
+./scripts/build-layer-direct.ps1 -Ndk "C:\path\to\ndk" -Version 0.0.3
 ./scripts/package.ps1
 ```
 

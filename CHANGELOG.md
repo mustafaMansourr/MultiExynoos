@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.0.3 — 2026-10-18
+
+Fixes the ARMSX3-only black screen on Demon's Souls (BLES00932) when the
+MultiExynoos driver is selected. Import this into an adrenotools host.
+
+### Fixed
+
+- **ARMSX3 black screen (root cause: missing `HMI`).** ARMSX3's custom-driver
+  hook intercepts the *system* Vulkan loader's sphal load of
+  `vulkan.samsung.so` and substitutes our `.so`. The AOSP loader then dlsyms
+  the `HMI` hardware-module symbol; v0.0.2 exported none, so the loader fell
+  back to the stub HAL (zero GPUs) and RSX fataled with "No compatible GPU
+  devices found" (`VKGSRender.cpp:445`). v0.0.3 exports `HMI` and forwards
+  the three HAL entry points verbatim to the vendor ICD — preferring the
+  vendor's own `HMI` device, falling back to ICD entry points.
+
+### Added
+
+- **Android Vulkan HAL (hwvulkan) mode.** A third entry path alongside the
+  loader layer and the standalone ICD. Recursion guards: the HAL-mode
+  underlying ladder never includes `libvulkan.so` (the caller above us), and
+  every candidate is rejected via `dladdr` base comparison if a host hook
+  bounces our own `dlopen` back to this `.so`. A missing vendor ICD is a hard
+  named error, never a silent stub.
+- **One-time mode banner.** A single logcat line names the entry mode
+  (loader layer / standalone ICD / HAL) and the concrete driver path wrapped.
+
 ## 0.0.2 — 2026-09-20
 
 Combined build: contains everything from `0.0.11` plus standalone-ICD mode.
