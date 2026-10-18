@@ -253,6 +253,21 @@ bool gipa_is_self(PFN_vkGetInstanceProcAddr gipa) {
     return cand_info.dli_fbase && self_info.dli_fbase &&
            cand_info.dli_fbase == self_info.dli_fbase;
 }
+
+/* Same test for a bare data pointer (e.g. a candidate's "HMI" symbol): a host
+ * hook can hand us a handle that is really this very .so, and adopting its HMI
+ * would recurse into mx_hal_open. */
+bool ptr_is_self(const void *p) {
+    if (!p)
+        return false;
+    Dl_info cand_info{};
+    Dl_info self_info{};
+    if (!dladdr(const_cast<void *>(p), &cand_info) ||
+        !dladdr(reinterpret_cast<void *>(&mx_GetInstanceProcAddr), &self_info))
+        return false;
+    return cand_info.dli_fbase && self_info.dli_fbase &&
+           cand_info.dli_fbase == self_info.dli_fbase;
+}
 #endif /* __ANDROID__ */
 
 const VkLayerInstanceCreateInfo *find_instance_link(
@@ -389,32 +404,14 @@ bool ensure_underlying() {
  * (byte-identical to the un-hooked loader path: same functions, same handles,
  * same dispatch magic), falling back to ICD-style entry points. */
 bool adopt_hal_handle(void *handle, const char *path) {
-    auto gipa = reinterpret_cast<PFN_vkGetInstanceProcAddr>(
-        dlsym(handle, "vkGetInstanceProcAddr"));
-    if (!gipa) {
-        gipa = reinterpret_cast<PFN_vkGetInstanceProcAddr>(
-            dlsym(handle, "vk_icdGetInstanceProcAddr"));
-    }
-    if (!gipa) {
-        MX_LOG("HAL: '%s' exports no gipa entry point; trying next candidate",
-               path);
-        dlclose(handle);
-        return false;
-    }
-
-    /* Self-load guard: reject a candidate that resolved back to us. */
-    if (gipa_is_self(gipa)) {
-        MX_LOG("HAL: '%s' resolved to MultiExynoos itself (host redirected "
-               "the load); rejecting", path);
-        dlclose(handle);
-        return false;
-    }
-
-    /* Preferred: the vendor's own hwvulkan device, opened exactly as the
-     * un-hooked loader would open it. */
+    /* Preferred - and, for a HAL-only vendor driver, the ONLY usable path:
+     * open the vendor's own hwvulkan device exactly as the un-hooked loader
+     * would. vulkan.samsung.so exports "HMI" but neither vkGetInstanceProcAddr
+     * nor vk_icdGetInstanceProcAddr, so the HMI probe must come FIRST; gating
+     * it behind an ICD-style gipa symbol rejects the real vendor driver. */
     auto *vhmi = reinterpret_cast<mx_hwvulkan_module_t *>(
         dlsym(handle, "HMI"));
-    if (vhmi && vhmi->common.id &&
+    if (vhmi && !ptr_is_self(vhmi) && vhmi->common.id &&
         !std::strcmp(vhmi->common.id, "vulkan") && vhmi->common.methods &&
         vhmi->common.methods->open) {
         vhmi->common.dso = handle;
@@ -437,6 +434,28 @@ bool adopt_hal_handle(void *handle, const char *path) {
         }
         MX_LOG("HAL: vendor HMI present but open failed for '%s'; falling "
                "back to ICD entry points", path);
+    }
+
+    /* Fallback: loader/ICD-style vkGetInstanceProcAddr. */
+    auto gipa = reinterpret_cast<PFN_vkGetInstanceProcAddr>(
+        dlsym(handle, "vkGetInstanceProcAddr"));
+    if (!gipa) {
+        gipa = reinterpret_cast<PFN_vkGetInstanceProcAddr>(
+            dlsym(handle, "vk_icdGetInstanceProcAddr"));
+    }
+    if (!gipa) {
+        MX_LOG("HAL: '%s' exports no gipa entry point; trying next candidate",
+               path);
+        dlclose(handle);
+        return false;
+    }
+
+    /* Self-load guard: reject a candidate that resolved back to us. */
+    if (gipa_is_self(gipa)) {
+        MX_LOG("HAL: '%s' resolved to MultiExynoos itself (host redirected "
+               "the load); rejecting", path);
+        dlclose(handle);
+        return false;
     }
 
     /* Fallback: ICD-style entry points. */
