@@ -4,8 +4,9 @@
  * Dual-mode by design, because two very different hosts load this one .so:
  *
  *   1. Loader layer. A Vulkan loader chains us via VK_LAYER_LINK_INFO and we
- *      forward to the next layer/ICD. This is the Phase-1 behaviour and is
- *      unchanged.
+ *      forward to the next layer/ICD. This is the Phase-1 behaviour; it is
+ *      unchanged, including pre-instance queries, which the host loader
+ *      answers (v0.0.1 parity — see docs/REGRESSION-0.0.1-vs-0.0.2.md).
  *
  *   2. Standalone ICD. adrenotools hosts (ARMSX3 and the Yuzu-likes) dlopen
  *      this .so and use it as the *single* Vulkan driver. They call
@@ -98,6 +99,15 @@ PFN_vkCreateInstance underlying_create = nullptr;
  * avoid dlopen("libvulkan.so") recursing into the loader that just loaded us. */
 bool g_entered_as_icd = false;
 
+/* Set once a Vulkan loader has negotiated the *layer* interface with us.
+ * v0.0.1 parity: in that situation pre-instance queries
+ * (vkEnumerateInstanceVersion / vkEnumerateInstanceExtensionProperties /
+ * vkEnumerateInstanceLayerProperties) belong to the loader, and answering
+ * them by self-loading the system libvulkan.so would initialise the system
+ * graphics stack underneath a chained session — the v0.0.2 regression
+ * against v0.0.1 (see docs/REGRESSION-0.0.1-vs-0.0.2.md). */
+bool g_entered_as_layer = false;
+
 const VkLayerInstanceCreateInfo *find_instance_link(
     const VkInstanceCreateInfo *ci) {
     auto *chain =
@@ -135,6 +145,22 @@ bool load_underlying_from(const char *path) {
         MX_LOG("underlying '%s' exports no vkGetInstanceProcAddr / "
                "vk_icdGetInstanceProcAddr",
                path);
+        dlclose(handle);
+        return false;
+    }
+
+    /* A candidate that cannot create an instance is useless to us; reject it
+     * here so the search continues with the next candidate (e.g. a
+     * loader-shaped but instance-incapable libvulkan.so must not block the
+     * vendor ICD). */
+    auto create = reinterpret_cast<PFN_vkCreateInstance>(
+        gipa(VK_NULL_HANDLE, "vkCreateInstance"));
+    if (!create)
+        create = reinterpret_cast<PFN_vkCreateInstance>(
+            dlsym(handle, "vkCreateInstance"));
+    if (!create) {
+        MX_LOG("underlying '%s' exposes no vkCreateInstance; trying next "
+               "candidate", path);
         dlclose(handle);
         return false;
     }
@@ -253,6 +279,7 @@ mx_NegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface *v) {
         v->loaderLayerInterfaceVersion = kMaxLoaderLayerInterface;
     /* Hand the loader our dispatch entry points; without these the layer is
      * loaded but never called. */
+    g_entered_as_layer = true;
     v->pfnGetInstanceProcAddr = mx_GetInstanceProcAddr;
     v->pfnGetDeviceProcAddr = mx_GetDeviceProcAddr;
     return VK_SUCCESS;
@@ -321,10 +348,22 @@ mx_GetInstanceProcAddr(VkInstance instance, const char *name) {
             mx_icdNegotiateLoaderICDInterfaceVersion);
 
     /* Pre-instance queries (vkEnumerateInstanceVersion,
-     * vkEnumerateInstanceExtensionProperties, vkEnumerateInstanceLayerProperties)
-     * must reach the underlying driver in ICD mode, where no loader answers
-     * them for us. */
+     * vkEnumerateInstanceExtensionProperties, vkEnumerateInstanceLayerProperties):
+     *   - A loader negotiated the layer interface with us (v0.0.1 behaviour):
+     *     these belong to that loader; return nullptr so it answers them.
+     *     Self-loading libvulkan.so here would regress v0.0.1.
+     *   - No loader chain (adrenotools direct dlopen, ICD entry): forward to
+     *     the driver we wrap, because nothing else will answer for us. */
     if (instance == VK_NULL_HANDLE) {
+        if (g_entered_as_layer && !g_entered_as_icd) {
+            static bool s_logged = false;
+            if (!s_logged) {
+                s_logged = true;
+                MX_LOG("layer mode: pre-instance query '%s' left to the "
+                       "loader (v0.0.1 parity)", name);
+            }
+            return nullptr;
+        }
         if (ensure_underlying())
             return underlying_gipa(VK_NULL_HANDLE, name);
         return nullptr;
