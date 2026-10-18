@@ -24,6 +24,18 @@ This is the version to import into an adrenotools host.
 
 ### Fixed
 
+- **v0.0.1 regression.** v0.0.2 made `vkGetInstanceProcAddr(VK_NULL_HANDLE,
+  "vkEnumerateInstance*")` self-load `libvulkan.so` and answer with the system
+  loader's functions even when a Vulkan loader had negotiated the layer
+  interface with us. v0.0.1 returned `nullptr` there so the host loader
+  answered and only its graphics stack was in play; the v0.0.2 behaviour
+  initialised the system stack underneath chained sessions and black-screened
+  the boot pipeline before any stage logged. Layer-negotiated sessions now get
+  the v0.0.1 `nullptr` again; direct-dlopen/ICD hosts still get forwarded
+  answers. See `docs/REGRESSION-0.0.1-vs-0.0.2.md`.
+- Standalone candidates must resolve `vkCreateInstance` before being accepted,
+  so a loader-shaped but instance-incapable `libvulkan.so` no longer blocks
+  trying the vendor ICD.
 - ARMSX3 permanent black screen with nothing in the log when this package was
   selected as a custom driver. `vkCreateInstance` returned
   `VK_ERROR_INITIALIZATION_FAILED` because an adrenotools host never supplies
@@ -37,6 +49,8 @@ This is the version to import into an adrenotools host.
 
 - Package `name` is now `MultiExynoos` (was `MultiExynoos Layer`); layer
   manifest `implementation_version` bumped to `2`.
+- `layerLibrary` restored in `meta.json` (present in v0.0.1, dropped in the
+  first 0.0.2 build) so hosts keying on it regain the layer-package signal.
 - `libdl` is linked explicitly (`${CMAKE_DL_LIBS}` / `-ldl`) for the
   self-loading path.
 
