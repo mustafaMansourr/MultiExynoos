@@ -72,6 +72,17 @@ static bool mx_log_enabled() {
     } while (0)
 #endif
 
+/* One-time mode banner: names how we were entered and what we forward to, so
+ * a device log shows the active mode without digging. First entry wins. */
+static void mx_log_banner_once(const char *mode, const char *target) {
+    static bool s_logged = false;
+    if (s_logged)
+        return;
+    s_logged = true;
+    MX_LOG("MultiExynoos " MX_VERSION_STR " entered as %s, forwarding to %s",
+           mode, target ? target : "(none)");
+}
+
 #ifndef MX_VERSION_STR
 #define MX_VERSION_STR "0.0.2-dev"
 #endif
@@ -190,6 +201,10 @@ PFN_vkGetDeviceProcAddr real_gdpa = nullptr;
 void *g_underlying = nullptr;
 PFN_vkGetInstanceProcAddr underlying_gipa = nullptr;
 PFN_vkCreateInstance underlying_create = nullptr;
+/* Path of the driver we wrapped, for the one-time mode banner. Static buffer:
+ * the candidate list is fixed, so only the chosen path is ever copied. */
+const char *g_underlying_path = nullptr;
+char g_underlying_path_buf[256];
 
 /* Set once a Vulkan loader has negotiated the ICD interface with us. Used to
  * avoid dlopen("libvulkan.so") recursing into the loader that just loaded us. */
@@ -311,6 +326,9 @@ bool load_underlying_from(const char *path) {
 
     g_underlying = handle;
     underlying_gipa = gipa;
+    std::snprintf(g_underlying_path_buf, sizeof(g_underlying_path_buf), "%s",
+                  path);
+    g_underlying_path = g_underlying_path_buf;
     MX_LOG("underlying driver loaded: %s", path);
     return true;
 }
@@ -410,6 +428,9 @@ bool adopt_hal_handle(void *handle, const char *path) {
                 hal_create = vvd->CreateInstance;
                 hal_gipa = vvd->GetInstanceProcAddr;
                 g_hal_underlying = handle;
+                std::snprintf(g_underlying_path_buf,
+                              sizeof(g_underlying_path_buf), "%s", path);
+                g_underlying_path = g_underlying_path_buf;
                 MX_LOG("HAL: vendor ICD loaded via its HMI: %s", path);
                 return true;
             }
@@ -442,6 +463,9 @@ bool adopt_hal_handle(void *handle, const char *path) {
     hal_gipa = gipa;
     hal_create = create;
     hal_enum_ext = enum_ext;
+    std::snprintf(g_underlying_path_buf, sizeof(g_underlying_path_buf), "%s",
+                  path);
+    g_underlying_path = g_underlying_path_buf;
     MX_LOG("HAL: vendor ICD loaded via ICD entry points: %s", path);
     return true;
 }
@@ -631,6 +655,8 @@ int mx_hal_open(const mx_hw_module_t *module, const char *id,
     }
     g_hal_open_in_progress = false;
 
+    mx_log_banner_once("HAL (hwvulkan)", g_underlying_path);
+
     static mx_hwvulkan_device_t dev;
     dev.common.tag = kHwDeviceTag;
     dev.common.version = kHwvulkanDeviceApi01;
@@ -656,6 +682,8 @@ VKAPI_ATTR VkResult VKAPI_CALL mx_CreateInstance(
     /* ---- Mode 1: chained by a loader (VK_LAYER_LINK_INFO present) ---- */
     if (const VkLayerInstanceCreateInfo *link = find_instance_link(ci)) {
         next_gipa = link->u.pLayerInfo->pfnNextGetInstanceProcAddr;
+
+        mx_log_banner_once("loader layer", "the next layer/ICD in the chain");
 
         auto create = reinterpret_cast<PFN_vkCreateInstance>(
             next_gipa(VK_NULL_HANDLE, "vkCreateInstance"));
@@ -683,6 +711,8 @@ VKAPI_ATTR VkResult VKAPI_CALL mx_CreateInstance(
                "to an absolute .so path");
         return VK_ERROR_INITIALIZATION_FAILED;
     }
+
+    mx_log_banner_once("standalone ICD", g_underlying_path);
 
     if (!underlying_create) {
         underlying_create = reinterpret_cast<PFN_vkCreateInstance>(
